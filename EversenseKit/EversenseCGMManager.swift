@@ -88,7 +88,7 @@ public class EversenseCGMManager: CGMManager {
         HKDevice(
             name: state.modelStr,
             manufacturer: "Senseonics",
-            model: nil,
+            model: state.is365 ? "Eversense 365" : "Eversense E3",
             hardwareVersion: nil,
             firmwareVersion: state.version,
             softwareVersion: state.extVersion,
@@ -253,28 +253,31 @@ extension EversenseCGMManager {
                     return
                 }
 
-                let newData = samples.map {
+                // The newest sample is the current reading unless it is stale; earlier ones are caught up from the transmitter's log
+                let newData = samples.enumerated().map { index, sample in
                     NewGlucoseSample(
                         cgmManager: self,
-                        value: $0.glucoseInMgDl,
-                        trend: $0.trend,
-                        dateTime: $0.datetime
+                        value: sample.glucoseInMgDl,
+                        trend: sample.trend,
+                        dateTime: sample.datetime,
+                        isBackfill: index < samples.count - 1 || Date.now.timeIntervalSince(sample.datetime) > .minutes(10)
                     )
                 }
 
                 delegate.cgmManager(self, hasNew: .newData(newData))
 
-                if !self.state.hasReportedInsertionDate {
+                let sensorID = self.state.sensorId.hexString()
+                if !self.state.sensorId.isEmpty, self.state.sensorStartReportedFor != sensorID {
                     let insertionEvent = PersistedCgmEvent(
                         date: self.state.activatedAt,
                         type: .sensorStart,
-                        deviceIdentifier: self.state.sensorId.hexString(),
+                        deviceIdentifier: sensorID,
                         expectedLifetime: self.state.is365 ? .days(365) : .days(180),
                         warmupPeriod: .hours(24)
                     )
                     delegate.cgmManager(self, hasNew: [insertionEvent])
 
-                    self.updateState { $0.hasReportedInsertionDate = true }
+                    self.updateState { $0.sensorStartReportedFor = sensorID }
                 }
             }
 
@@ -309,7 +312,53 @@ extension EversenseCGMManager {
             }
         }
 
-        updateState { $0.activeAlarms = alarms.filter { $0.code != .unknown } }
+        let sensorID = state.sensorId.isEmpty ? nil : state.sensorId.hexString()
+        let events = Self.cgmEvents(
+            for: newAlarms,
+            sensorID: sensorID,
+            transmitterID: state.transmitterId,
+            sensorEndRecordedFor: state.sensorEndRecordedFor
+        )
+        if !events.isEmpty {
+            delegate.notify { delegate in
+                delegate?.cgmManager(self, hasNew: events)
+            }
+        }
+
+        updateState {
+            $0.activeAlarms = alarms.filter { $0.code != .unknown }
+            if events.contains(where: { $0.type == .sensorEnd }) {
+                $0.sensorEndRecordedFor = sensorID
+            }
+        }
+    }
+
+    /// A `sensorIssue` for each newly raised alarm that stops sensor glucose, and a `sensorEnd`
+    /// once per sensor when it retires.
+    static func cgmEvents(
+        for newAlarms: [ActiveAlarm],
+        sensorID: String?,
+        transmitterID: String?,
+        sensorEndRecordedFor: String?
+    ) -> [PersistedCgmEvent] {
+        var events: [PersistedCgmEvent] = []
+        for alarm in newAlarms where alarm.code.interruptsGlucose {
+            let device = alarm.code.isAboutTransmitter ? transmitterID ?? sensorID : sensorID ?? transmitterID
+            guard let device else { continue }
+            events.append(PersistedCgmEvent(
+                date: alarm.datetime,
+                type: .sensorIssue,
+                deviceIdentifier: device,
+                error: CgmEventError(code: String(describing: alarm.code)),
+                metadata: ["alarmCode": String(alarm.code.rawValue)]
+            ))
+            if alarm.code.endsSensorSession, let sensorID, sensorID != sensorEndRecordedFor,
+               !events.contains(where: { $0.type == .sensorEnd })
+            {
+                events.append(PersistedCgmEvent(date: alarm.datetime, type: .sensorEnd, deviceIdentifier: sensorID))
+            }
+        }
+        return events
     }
 
     private func findNewAlarms(current: [ActiveAlarm], updated: [ActiveAlarm]) -> [ActiveAlarm] {
@@ -373,6 +422,7 @@ extension EversenseCGMManager {
             }
 
             cgmManagerDelegate.cgmManagerDidUpdateState(self)
+            cgmManagerDelegate.cgmManager(self, didUpdate: self.cgmManagerStatus)
         }
     }
 }
