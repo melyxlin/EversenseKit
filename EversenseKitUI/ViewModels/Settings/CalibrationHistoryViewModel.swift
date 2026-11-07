@@ -1,5 +1,5 @@
 import HealthKit
-import LoopAlgorithm
+import LoopKit
 import LoopKitUI
 import SwiftUI
 
@@ -90,7 +90,7 @@ class CalibrationHistoryViewModel: ObservableObject {
 
                     var tempHistory: [CalibrationGroup] = []
                     for item in historyResponse.calibrationHistory {
-                        let quantity = LoopQuantity(unit: .milligramsPerDeciliter, doubleValue: Double(item.glucoseInMgDl))
+                        let quantity = LoopKit.LoopQuantity(unit: .milligramsPerDeciliter, doubleValue: Double(item.glucoseInMgDl))
                         let historyItem = CalibrationHistoryItem(
                             time: timeFormatter.string(from: item.datetime),
                             glucose: glucosePreference.format(quantity),
@@ -135,7 +135,7 @@ class CalibrationHistoryViewModel: ObservableObject {
                         let item: EversenseE3.GetCalibrationLogResponse = try cgmManager.bluetoothManager
                             .write(EversenseE3.GetCalibrationLogPacket(index: UInt16(index)))
 
-                        let quantity = LoopQuantity(unit: .milligramsPerDeciliter, doubleValue: Double(item.glucoseInMgDl))
+                        let quantity = LoopKit.LoopQuantity(unit: .milligramsPerDeciliter, doubleValue: Double(item.glucoseInMgDl))
                         let historyItem = CalibrationHistoryItem(
                             time: timeFormatterE3.string(from: item.datetime),
                             glucose: glucosePreference.format(quantity),
